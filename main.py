@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from typing import Optional
+from datetime import datetime
 
 app = FastAPI()
 
@@ -12,117 +14,81 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class BetragEingabe(BaseModel):
-    betrag: float
-
-class AusgabeEingabe(BaseModel):
-    betrag: float
+# 🎯 NEUES MODELL: Einheitliche Transaktion
+class TransaktionEingabe(BaseModel):
+    typ: str  # "einnahme", "ausgabe", "zahlung", "sparen"
     bezeichnung: str
-    kategorie: str
-
-class SparzielEingabe(BaseModel):
-    name: str
     betrag: float
-    modus: str
+    datum: str  # Format: "YYYY-MM-DD"
+    kategorie: Optional[str] = ""
 
-class ZahlungEingabe(BaseModel):
-    name: str
-    betrag: float
-    datum: str
-
+# 🧠 SPEICHER
 kontostand_speicher = 0.0
-budget_speicher = 0.0
-sparziele_liste = []
-ausgaben_liste = []
-zahlungen_liste = []
+transaktionen_liste = []
 
+# ✅ START-SEITE
 @app.get("/")
 def read_root():
     return {"message": "Monetra Backend läuft!"}
 
-@app.get("/kontostand")
-def get_kontostand():
-    return {"kontostand": kontostand_speicher}
-
-@app.post("/kontostand")
-def set_kontostand(eingabe: BetragEingabe):
+# 💾 TRANSKATION SPEICHERN
+@app.post("/transaktion")
+def add_transaktion(eingabe: TransaktionEingabe):
     global kontostand_speicher
-    kontostand_speicher = eingabe.betrag
-    return {"kontostand": kontostand_speicher}
+    transaktionen_liste.append(eingabe.dict())
 
-@app.post("/kontostand/reset")
-def reset_kontostand():
-    global kontostand_speicher
-    kontostand_speicher = 0.0
-    return {"message": "Kontostand zurückgesetzt"}
+    if eingabe.typ == "einnahme":
+        kontostand_speicher += eingabe.betrag
+    else:
+        kontostand_speicher -= eingabe.betrag
 
-@app.get("/ausgaben")
-def get_ausgaben():
-    return {"ausgaben": ausgaben_liste}
+    return {
+        "message": "Transaktion gespeichert",
+        "neuer_kontostand": kontostand_speicher
+    }
 
-@app.post("/ausgabe")
-def add_ausgabe(eingabe: AusgabeEingabe):
-    ausgaben_liste.append({
-        "bezeichnung": eingabe.bezeichnung,
-        "betrag": eingabe.betrag,
-        "kategorie": eingabe.kategorie
-    })
-    return {"message": "Ausgabe hinzugefügt"}
+# 📜 ALLE TRANSAKTIONEN LADEN
+@app.get("/transaktionen")
+def get_transaktionen():
+    return {"transaktionen": transaktionen_liste}
 
-@app.post("/ausgaben/reset")
-def reset_ausgaben():
-    global ausgaben_liste
-    ausgaben_liste = []
-    return {"message": "Ausgaben zurückgesetzt"}
-
-@app.get("/gesamt_sparziele")
-def get_gesamt_sparziele():
-    return {"details": sparziele_liste}
-
-@app.post("/sparziel")
-def add_sparziel(eingabe: SparzielEingabe):
-    sparziele_liste.append({"name": eingabe.name, "betrag": eingabe.betrag, "modus": eingabe.modus})
-    return {"message": "Sparziel hinzugefügt"}
-
-@app.post("/sparziele/reset")
-def reset_sparziele():
-    global sparziele_liste
-    sparziele_liste = []
-    return {"message": "Sparziele zurückgesetzt"}
-
+# 💰 VERFÜGBARER BETRAG
 @app.get("/verfuegbar")
 def get_verfuegbar():
-    total_ausgaben = sum(item["betrag"] for item in ausgaben_liste)
-    total_sparziele = sum(item["betrag"] for item in sparziele_liste)
-    total_zahlungen = sum(item["betrag"] for item in zahlungen_liste)
-    return {"verfuegbar": kontostand_speicher - total_ausgaben - total_sparziele - total_zahlungen}
+    return {"verfuegbar": kontostand_speicher}
 
-@app.post("/zahlung")
-def add_zahlung(eingabe: ZahlungEingabe):
-    zahlungen_liste.append({"name": eingabe.name, "betrag": eingabe.betrag, "datum": eingabe.datum})
-    return {"message": "Zahlung hinzugefügt"}
+# 📅 NÄCHSTE ZAHLUNG ANZEIGEN
+@app.get("/naechste-zahlung")
+def get_next_payment():
+    heute = datetime.today().date()
+    zukunft = []
 
-@app.get("/zahlungen")
-def get_zahlungen():
-    return {"zahlungen": zahlungen_liste}
+    for t in transaktionen_liste:
+        if t["typ"] == "zahlung":
+            zahl_datum = datetime.strptime(t["datum"], "%Y-%m-%d").date()
+            if zahl_datum >= heute:
+                zukunft.append((zahl_datum, t["bezeichnung"], t["betrag"]))
 
-@app.post("/zahlungen/reset")
-def reset_zahlungen():
-    global zahlungen_liste
-    zahlungen_liste = []
-    return {"message": "Zahlungen zurückgesetzt"}
+    if not zukunft:
+        return {"message": "Keine zukünftigen Zahlungen"}
+    
+    zukunft.sort()
+    naechste = zukunft[0]
+    tage = (naechste[0] - heute).days
+    return {
+        "naechste": {
+            "in_tagen": tage,
+            "datum": naechste[0].isoformat(),
+            "name": naechste[1],
+            "betrag": naechste[2]
+        }
+    }
 
-@app.post("/budgets/reset")
-def reset_budgets():
-    global budget_speicher
-    budget_speicher = 0.0
-    return {"message": "Budgets zurückgesetzt"}
+# 🔁 RESET
+@app.post("/reset")
+def reset_all():
+    global kontostand_speicher, transaktionen_liste
+    kontostand_speicher = 0.0
+    transaktionen_liste = []
+    return {"message": "Alle Daten wurden zurückgesetzt"}
 
-@app.post("/alles/reset")
-def reset_alles():
-    reset_kontostand()
-    reset_ausgaben()
-    reset_sparziele()
-    reset_budgets()
-    reset_zahlungen()
-    return {"message": "Alle Daten zurückgesetzt"}
