@@ -14,24 +14,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 🎯 NEUES MODELL: Einheitliche Transaktion
 class TransaktionEingabe(BaseModel):
     typ: str  # "einnahme", "ausgabe", "zahlung", "sparen"
     bezeichnung: str
     betrag: float
-    datum: str  # Format: "YYYY-MM-DD"
+    datum: str
     kategorie: Optional[str] = ""
 
-# 🧠 SPEICHER
 kontostand_speicher = 0.0
 transaktionen_liste = []
 
-# ✅ START-SEITE
 @app.get("/")
 def read_root():
     return {"message": "Monetra Backend läuft!"}
 
-# 💾 TRANSKATION SPEICHERN
 @app.post("/transaktion")
 def add_transaktion(eingabe: TransaktionEingabe):
     global kontostand_speicher
@@ -47,31 +43,30 @@ def add_transaktion(eingabe: TransaktionEingabe):
         "neuer_kontostand": kontostand_speicher
     }
 
-# 📜 ALLE TRANSAKTIONEN LADEN
 @app.get("/transaktionen")
 def get_transaktionen():
     return {"transaktionen": transaktionen_liste}
 
-# 💰 VERFÜGBARER BETRAG
 @app.get("/verfuegbar")
 def get_verfuegbar():
     return {"verfuegbar": kontostand_speicher}
 
-# 📅 NÄCHSTE ZAHLUNG ANZEIGEN
 @app.get("/naechste-zahlung")
 def get_next_payment():
     heute = datetime.today().date()
-    zukunft = []
-
-    for t in transaktionen_liste:
-        if t["typ"] == "zahlung":
-            zahl_datum = datetime.strptime(t["datum"], "%Y-%m-%d").date()
-            if zahl_datum >= heute:
-                zukunft.append((zahl_datum, t["bezeichnung"], t["betrag"]))
+    zukunft = [
+        (
+            datetime.strptime(t["datum"], "%Y-%m-%d").date(),
+            t["bezeichnung"],
+            t["betrag"]
+        )
+        for t in transaktionen_liste
+        if t["typ"] == "zahlung" and datetime.strptime(t["datum"], "%Y-%m-%d").date() >= heute
+    ]
 
     if not zukunft:
         return {"message": "Keine zukünftigen Zahlungen"}
-    
+
     zukunft.sort()
     naechste = zukunft[0]
     tage = (naechste[0] - heute).days
@@ -84,7 +79,30 @@ def get_next_payment():
         }
     }
 
-# 🔁 RESET
+@app.get("/naechste-zahlungen")
+def get_all_future_payments():
+    heute = datetime.today().date()
+    future = []
+    gesamt_betrag = 0.0
+
+    for t in transaktionen_liste:
+        if t["typ"] == "zahlung":
+            zahl_datum = datetime.strptime(t["datum"], "%Y-%m-%d").date()
+            if zahl_datum >= heute:
+                tage = (zahl_datum - heute).days
+                future.append({
+                    "name": t["bezeichnung"],
+                    "datum": zahl_datum.isoformat(),
+                    "in_tagen": tage,
+                    "betrag": t["betrag"]
+                })
+                gesamt_betrag += t["betrag"]
+
+    return {
+        "gesamt_betrag": gesamt_betrag,
+        "zahlungen": sorted(future, key=lambda z: z["in_tagen"])
+    }
+
 @app.post("/reset")
 def reset_all():
     global kontostand_speicher, transaktionen_liste
