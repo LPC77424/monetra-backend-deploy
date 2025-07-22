@@ -15,12 +15,12 @@ app.add_middleware(
 )
 
 class TransaktionEingabe(BaseModel):
-    typ: str  # "einnahme", "ausgabe", "zahlung", "sparen"
+    typ: str
     bezeichnung: str
     betrag: float
     datum: str
     kategorie: Optional[str] = ""
-    wiederkehrend: Optional[bool] = False  # 🆕 NEU
+    wiederkehrend: Optional[bool] = False
 
 kontostand_speicher = 0.0
 transaktionen_liste = []
@@ -32,7 +32,19 @@ def read_root():
 @app.post("/transaktion")
 def add_transaktion(eingabe: TransaktionEingabe):
     global kontostand_speicher
-    transaktionen_liste.append(eingabe.dict())
+    transaktion = eingabe.dict()
+    transaktionen_liste.append(transaktion)
+
+    # 🔁 Wiederkehrend: 11 weitere Monate automatisch erzeugen
+    if transaktion.get("wiederkehrend"):
+        original_datum = datetime.strptime(transaktion["datum"], "%Y-%m-%d").date()
+        for monat in range(1, 12):
+            jahr = original_datum.year + (original_datum.month + monat - 1) // 12
+            monat_neu = (original_datum.month + monat - 1) % 12 + 1
+            neues_datum = original_datum.replace(year=jahr, month=monat_neu)
+            kopie = transaktion.copy()
+            kopie["datum"] = neues_datum.isoformat()
+            transaktionen_liste.append(kopie)
 
     if eingabe.typ == "einnahme":
         kontostand_speicher += eingabe.betrag
@@ -133,11 +145,9 @@ def monatsreport(monat: str):
 
     return result
 
-
 @app.post("/reset")
 def reset_all():
     global kontostand_speicher, transaktionen_liste
     kontostand_speicher = 0.0
     transaktionen_liste = []
     return {"message": "Alle Daten wurden zurückgesetzt"}
-
