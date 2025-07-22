@@ -20,6 +20,7 @@ class TransaktionEingabe(BaseModel):
     betrag: float
     datum: str
     kategorie: Optional[str] = ""
+    wiederkehrend: Optional[bool] = False  # 🆕 NEU
 
 kontostand_speicher = 0.0
 transaktionen_liste = []
