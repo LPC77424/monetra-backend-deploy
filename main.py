@@ -103,6 +103,36 @@ def get_all_future_payments():
         "zahlungen": sorted(future, key=lambda z: z["in_tagen"])
     }
 
+@app.get("/monatsreport")
+def monatsreport(monat: str):
+    try:
+        jahr, monat_zahl = map(int, monat.split("-"))
+    except ValueError:
+        return {"error": "Ungültiges Format (Erwartet YYYY-MM)"}
+
+    gefiltert = [
+        t for t in transaktionen_liste
+        if datetime.strptime(t["datum"], "%Y-%m-%d").year == jahr and
+           datetime.strptime(t["datum"], "%Y-%m-%d").month == monat_zahl
+    ]
+
+    result = {
+        "einnahmen": sum(t["betrag"] for t in gefiltert if t["typ"] == "einnahme"),
+        "ausgaben": sum(t["betrag"] for t in gefiltert if t["typ"] == "ausgabe"),
+        "zahlungen": sum(t["betrag"] for t in gefiltert if t["typ"] == "zahlung"),
+        "sparen": sum(t["betrag"] for t in gefiltert if t["typ"] == "sparen"),
+        "anzahl_transaktionen": len(gefiltert),
+        "kategorien": {}
+    }
+
+    for t in gefiltert:
+        kat = t.get("kategorie", "Sonstige") or "Sonstige"
+        result["kategorien"].setdefault(kat, 0)
+        result["kategorien"][kat] += t["betrag"]
+
+    return result
+
+
 @app.post("/reset")
 def reset_all():
     global kontostand_speicher, transaktionen_liste
