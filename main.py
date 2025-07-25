@@ -56,9 +56,12 @@ def add_transaktion(eingabe: TransaktionEingabe):
 
     return {"message": "Transaktion gespeichert", "id": transaktion["id"]}
 
-@app.get("/transaktionen")
-def get_transaktionen():
-    return {"transaktionen": transaktionen_liste}
+@app.get("/transaktion/{id}")
+def get_transaktion_by_id(id: str):
+    for t in transaktionen_liste:
+        if t["id"] == id:
+            return t
+    return {"error": "Nicht gefunden"}, 404
 
 @app.get("/verfuegbar")
 def get_verfuegbar():
