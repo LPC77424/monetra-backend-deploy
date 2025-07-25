@@ -34,7 +34,7 @@ def read_root():
 def add_transaktion(eingabe: TransaktionEingabe):
     global kontostand_speicher
     transaktion = eingabe.dict()
-    transaktion["id"] = str(uuid4())  # 🔐 Eindeutige ID setzen
+    transaktion["id"] = str(uuid4())
     transaktionen_liste.append(transaktion)
 
     if transaktion.get("wiederkehrend"):
@@ -68,16 +68,35 @@ def get_transaktion_by_id(id: str):
 
 @app.put("/transaktion/{id}")
 def update_transaktion(id: str, eingabe: TransaktionEingabe):
-    global transaktionen_liste
+    global transaktionen_liste, kontostand_speicher
     for idx, t in enumerate(transaktionen_liste):
         if t["id"] == id:
+            # Alten Wert zurückrechnen
+            if t["typ"] == "einnahme":
+                kontostand_speicher -= t["betrag"]
+            else:
+                kontostand_speicher += t["betrag"]
+
+            # Neuen Wert hinzufügen
+            if eingabe.typ == "einnahme":
+                kontostand_speicher += eingabe.betrag
+            else:
+                kontostand_speicher -= eingabe.betrag
+
             transaktionen_liste[idx] = {**eingabe.dict(), "id": id}
             return {"message": "Transaktion aktualisiert"}
     return {"error": "Nicht gefunden"}
 
 @app.delete("/transaktion/{id}")
 def delete_transaktion(id: str):
-    global transaktionen_liste
+    global transaktionen_liste, kontostand_speicher
+    for t in transaktionen_liste:
+        if t["id"] == id:
+            if t["typ"] == "einnahme":
+                kontostand_speicher -= t["betrag"]
+            else:
+                kontostand_speicher += t["betrag"]
+            break
     transaktionen_liste = [t for t in transaktionen_liste if t["id"] != id]
     return {"message": "Transaktion gelöscht"}
 
