@@ -4,7 +4,6 @@ from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
 from uuid import uuid4
-import uuid
 
 app = FastAPI()
 
@@ -35,7 +34,7 @@ def read_root():
 def add_transaktion(eingabe: TransaktionEingabe):
     global kontostand_speicher
     transaktion = eingabe.dict()
-    transaktion["id"] = str(uuid.uuid4())  # ✅ ID hinzufügen
+    transaktion["id"] = str(uuid4())  # 🔐 Eindeutige ID setzen
     transaktionen_liste.append(transaktion)
 
     if transaktion.get("wiederkehrend"):
@@ -56,12 +55,31 @@ def add_transaktion(eingabe: TransaktionEingabe):
 
     return {"message": "Transaktion gespeichert", "id": transaktion["id"]}
 
+@app.get("/transaktionen")
+def get_transaktionen():
+    return {"transaktionen": transaktionen_liste}
+
 @app.get("/transaktion/{id}")
 def get_transaktion_by_id(id: str):
     for t in transaktionen_liste:
         if t["id"] == id:
             return t
-    return {"error": "Nicht gefunden"}, 404
+    return {"error": "Nicht gefunden"}
+
+@app.put("/transaktion/{id}")
+def update_transaktion(id: str, eingabe: TransaktionEingabe):
+    global transaktionen_liste
+    for idx, t in enumerate(transaktionen_liste):
+        if t["id"] == id:
+            transaktionen_liste[idx] = {**eingabe.dict(), "id": id}
+            return {"message": "Transaktion aktualisiert"}
+    return {"error": "Nicht gefunden"}
+
+@app.delete("/transaktion/{id}")
+def delete_transaktion(id: str):
+    global transaktionen_liste
+    transaktionen_liste = [t for t in transaktionen_liste if t["id"] != id]
+    return {"message": "Transaktion gelöscht"}
 
 @app.get("/verfuegbar")
 def get_verfuegbar():
@@ -147,21 +165,6 @@ def monatsreport(monat: str):
         result["kategorien"][kat] += t["betrag"]
 
     return result
-
-@app.put("/transaktion/{id}")
-def update_transaktion(id: str, eingabe: TransaktionEingabe):
-    global transaktionen_liste
-    for idx, t in enumerate(transaktionen_liste):
-        if t["id"] == id:
-            transaktionen_liste[idx] = {**eingabe.dict(), "id": id}
-            return {"message": "Transaktion aktualisiert"}
-    return {"error": "Nicht gefunden"}
-
-@app.delete("/transaktion/{id}")
-def delete_transaktion(id: str):
-    global transaktionen_liste
-    transaktionen_liste = [t for t in transaktionen_liste if t["id"] != id]
-    return {"message": "Transaktion gelöscht"}
 
 @app.post("/reset")
 def reset_all():
