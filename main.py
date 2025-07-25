@@ -3,6 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
+from uuid import uuid4
+import uuid
 
 app = FastAPI()
 
@@ -33,9 +35,9 @@ def read_root():
 def add_transaktion(eingabe: TransaktionEingabe):
     global kontostand_speicher
     transaktion = eingabe.dict()
+    transaktion["id"] = str(uuid.uuid4())  # ✅ ID hinzufügen
     transaktionen_liste.append(transaktion)
 
-    # 🔁 Wiederkehrend: 11 weitere Monate automatisch erzeugen
     if transaktion.get("wiederkehrend"):
         original_datum = datetime.strptime(transaktion["datum"], "%Y-%m-%d").date()
         for monat in range(1, 12):
@@ -43,6 +45,7 @@ def add_transaktion(eingabe: TransaktionEingabe):
             monat_neu = (original_datum.month + monat - 1) % 12 + 1
             neues_datum = original_datum.replace(year=jahr, month=monat_neu)
             kopie = transaktion.copy()
+            kopie["id"] = str(uuid4())
             kopie["datum"] = neues_datum.isoformat()
             transaktionen_liste.append(kopie)
 
@@ -51,10 +54,7 @@ def add_transaktion(eingabe: TransaktionEingabe):
     else:
         kontostand_speicher -= eingabe.betrag
 
-    return {
-        "message": "Transaktion gespeichert",
-        "neuer_kontostand": kontostand_speicher
-    }
+    return {"message": "Transaktion gespeichert", "id": transaktion["id"]}
 
 @app.get("/transaktionen")
 def get_transaktionen():
@@ -144,6 +144,21 @@ def monatsreport(monat: str):
         result["kategorien"][kat] += t["betrag"]
 
     return result
+
+@app.put("/transaktion/{id}")
+def update_transaktion(id: str, eingabe: TransaktionEingabe):
+    global transaktionen_liste
+    for idx, t in enumerate(transaktionen_liste):
+        if t["id"] == id:
+            transaktionen_liste[idx] = {**eingabe.dict(), "id": id}
+            return {"message": "Transaktion aktualisiert"}
+    return {"error": "Nicht gefunden"}
+
+@app.delete("/transaktion/{id}")
+def delete_transaktion(id: str):
+    global transaktionen_liste
+    transaktionen_liste = [t for t in transaktionen_liste if t["id"] != id]
+    return {"message": "Transaktion gelöscht"}
 
 @app.post("/reset")
 def reset_all():
