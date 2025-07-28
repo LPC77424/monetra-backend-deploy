@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
@@ -6,13 +6,10 @@ from datetime import datetime
 from uuid import uuid4
 
 app = FastAPI()
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=["*"], allow_credentials=True,
+    allow_methods=["*"], allow_headers=["*"],
 )
 
 class TransaktionEingabe(BaseModel):
@@ -22,32 +19,24 @@ class TransaktionEingabe(BaseModel):
     datum: str
     kategorie: Optional[str] = ""
     wiederkehrend: Optional[bool] = False
-    alle_zukuenftig: Optional[bool] = False  # NEU: als Feld im Body
+    alle_zukuenftig: Optional[bool] = False
 
 transaktionen_liste = []
 
-@app.get("/")
-def read_root():
-    return {"message": "Monetra Backend läuft!"}
-
 @app.post("/transaktion")
 def add_transaktion(eingabe: TransaktionEingabe):
-    transaktion = eingabe.dict()
-    transaktion["id"] = str(uuid4())
-    transaktionen_liste.append(transaktion)
-
-    if transaktion.get("wiederkehrend"):
-        original_datum = datetime.strptime(transaktion["datum"], "%Y-%m-%d").date()
-        for monat in range(1, 12):
-            jahr = original_datum.year + (original_datum.month + monat - 1) // 12
-            monat_neu = (original_datum.month + monat - 1) % 12 + 1
-            neues_datum = original_datum.replace(year=jahr, month=monat_neu)
-            kopie = transaktion.copy()
-            kopie["id"] = str(uuid4())
-            kopie["datum"] = neues_datum.isoformat()
-            transaktionen_liste.append(kopie)
-
-    return {"message": "Transaktion gespeichert", "id": transaktion["id"]}
+    trans = eingabe.dict()
+    trans["id"] = str(uuid4())
+    transaktionen_liste.append(trans)
+    if trans.get("wiederkehrend"):
+        orig = datetime.strptime(trans["datum"], "%Y-%m-%d").date()
+        for m in range(1, 12):
+            year = orig.year + (orig.month + m - 1) // 12
+            month = (orig.month + m - 1) % 12 + 1
+            new = orig.replace(year=year, month=month)
+            k = trans.copy(); k["id"] = str(uuid4()); k["datum"] = new.isoformat()
+            transaktionen_liste.append(k)
+    return {"message": "Transaktion gespeichert", "id": trans["id"]}
 
 @app.get("/transaktionen")
 def get_transaktionen():
@@ -55,167 +44,109 @@ def get_transaktionen():
 
 @app.get("/transaktion/{id}")
 def get_transaktion_by_id(id: str):
-    for t in transaktionen_liste:
-        if t["id"] == id:
-            return t
-    return {"error": "Nicht gefunden"}
+    t = next((x for x in transaktionen_liste if x["id"] == id), None)
+    return t or {"error": "Nicht gefunden"}
 
 @app.put("/transaktion/{id}")
-def update_transaktion(id: str, eingabe: TransaktionEingabe):
-    gefunden = next((t for t in transaktionen_liste if t["id"] == id), None)
-    if not gefunden:
-        return {"error": "Nicht gefunden"}
-
-    datum_alt = datetime.strptime(gefunden["datum"], "%Y-%m-%d").date()
-
-    if eingabe.alle_zukuenftig and gefunden.get("wiederkehrend"):
+def update_transaktion(id: str, eingabe: TransaktionEingabe, alle_zukuenftig: bool = Query(False)):
+    orig = next((x for x in transaktionen_liste if x["id"] == id), None)
+    if not orig: return {"error": "Nicht gefunden"}
+    orig_date = datetime.strptime(orig["datum"], "%Y-%m-%d").date()
+    if alle_zukuenftig and orig.get("wiederkehrend"):
         transaktionen_liste[:] = [
             t for t in transaktionen_liste
-            if not (
-                t.get("wiederkehrend") and
-                t["bezeichnung"] == gefunden["bezeichnung"] and
-                datetime.strptime(t["datum"], "%Y-%m-%d").date() >= datum_alt
-            )
+            if not (t.get("wiederkehrend") and t["bezeichnung"] == orig["bezeichnung"] and
+                    datetime.strptime(t["datum"], "%Y-%m-%d").date() >= orig_date)
         ]
-        neue_transaktion = eingabe.dict()
-        neue_transaktion.pop("alle_zukuenftig", None)
-        neue_transaktion["id"] = str(uuid4())
-        transaktionen_liste.append(neue_transaktion)
-
-        if neue_transaktion.get("wiederkehrend"):
-            original_datum = datetime.strptime(neue_transaktion["datum"], "%Y-%m-%d").date()
-            for monat in range(1, 12):
-                jahr = original_datum.year + (original_datum.month + monat - 1) // 12
-                monat_neu = (original_datum.month + monat - 1) % 12 + 1
-                neues_datum = original_datum.replace(year=jahr, month=monat_neu)
-                kopie = neue_transaktion.copy()
-                kopie["id"] = str(uuid4())
-                kopie["datum"] = neues_datum.isoformat()
-                transaktionen_liste.append(kopie)
+        neu = eingabe.dict(); neu.pop("alle_zukuenftig", None)
+        neu["id"] = str(uuid4()); transaktionen_liste.append(neu)
+        if neu.get("wiederkehrend"):
+            base = datetime.strptime(neu["datum"], "%Y-%m-%d").date()
+            for m in range(1, 12):
+                y = base.year + (base.month + m - 1) // 12
+                mo = (base.month + m - 1) % 12 + 1
+                nd = base.replace(year=y, month=mo)
+                kp = neu.copy(); kp["id"] = str(uuid4()); kp["datum"] = nd.isoformat()
+                transaktionen_liste.append(kp)
         return {"message": "Serie aktualisiert"}
     else:
-        for idx, t in enumerate(transaktionen_liste):
-            if t["id"] == id:
-                neue_daten = eingabe.dict()
-                neue_daten.pop("alle_zukuenftig", None)
-                transaktionen_liste[idx] = {**neue_daten, "id": id}
-                return {"message": "Transaktion aktualisiert"}
+        idx = transaktionen_liste.index(orig)
+        daten = eingabe.dict(); daten.pop("alle_zukuenftig", None)
+        transaktionen_liste[idx] = {**daten, "id": id}
+        return {"message": "Transaktion aktualisiert"}
 
 @app.delete("/transaktion/{id}")
-def delete_transaktion(id: str, eingabe: TransaktionEingabe):
-    ziel = next((t for t in transaktionen_liste if t["id"] == id), None)
-    if not ziel:
-        return {"error": "Nicht gefunden"}
-
-    datum_ziel = datetime.strptime(ziel["datum"], "%Y-%m-%d").date()
-
-    if eingabe.alle_zukuenftig and ziel.get("wiederkehrend"):
+def delete_transaktion(id: str, alle_zukuenftig: bool = Query(False)):
+    ziel = next((x for x in transaktionen_liste if x["id"] == id), None)
+    if not ziel: return {"error": "Nicht gefunden"}
+    date_z = datetime.strptime(ziel["datum"], "%Y-%m-%d").date()
+    if alle_zukuenftig and ziel.get("wiederkehrend"):
         transaktionen_liste[:] = [
             t for t in transaktionen_liste
-            if not (
-                t.get("wiederkehrend") and
-                t["bezeichnung"] == ziel["bezeichnung"] and
-                datetime.strptime(t["datum"], "%Y-%m-%d").date() >= datum_ziel
-            )
+            if not (t.get("wiederkehrend") and t["bezeichnung"] == ziel["bezeichnung"] and
+                    datetime.strptime(t["datum"], "%Y-%m-%d").date() >= date_z)
         ]
         return {"message": "Serie gelöscht"}
-    else:
-        transaktionen_liste[:] = [t for t in transaktionen_liste if t["id"] != id]
-        return {"message": "Transaktion gelöscht"}
+    transaktionen_liste[:] = [t for t in transaktionen_liste if t["id"] != id]
+    return {"message": "Transaktion gelöscht"}
 
 @app.get("/verfuegbar")
 def get_verfuegbar():
-    heute = datetime.today().date()
-    verfuegbar = 0.0
+    today = datetime.today().date()
+    summe = 0.0
     for t in transaktionen_liste:
-        datum = datetime.strptime(t["datum"], "%Y-%m-%d").date()
-        if datum <= heute:
-            if t["typ"] == "einnahme":
-                verfuegbar += t["betrag"]
-            else:
-                verfuegbar -= t["betrag"]
-    return {"verfuegbar": verfuegbar}
+        d = datetime.strptime(t["datum"], "%Y-%m-%d").date()
+        if d <= today:
+            summe += t["betrag"] if t["typ"] == "einnahme" else -t["betrag"]
+    return {"verfuegbar": summe}
 
 @app.get("/naechste-zahlung")
 def get_next_payment():
-    heute = datetime.today().date()
-    zukunft = [
-        (
-            datetime.strptime(t["datum"], "%Y-%m-%d").date(),
-            t["bezeichnung"],
-            t["betrag"]
-        )
-        for t in transaktionen_liste
-        if t["typ"] == "zahlung" and datetime.strptime(t["datum"], "%Y-%m-%d").date() >= heute
-    ]
-
-    if not zukunft:
-        return {"message": "Keine zukünftigen Zahlungen"}
-
-    zukunft.sort()
-    naechste = zukunft[0]
-    tage = (naechste[0] - heute).days
-    return {
-        "naechste": {
-            "in_tagen": tage,
-            "datum": naechste[0].isoformat(),
-            "name": naechste[1],
-            "betrag": naechste[2]
-        }
-    }
+    today = datetime.today().date()
+    future = [(datetime.strptime(t["datum"], "%Y-%m-%d").date(), t["bezeichnung"], t["betrag"])
+              for t in transaktionen_liste if t["typ"] == "zahlung" and
+              datetime.strptime(t["datum"], "%Y-%m-%d").date() >= today]
+    if not future: return {"message": "Keine zukünftigen Zahlungen"}
+    future.sort()
+    d, b, amount = future[0]
+    return {"naechste": {"in_tagen": (d - today).days, "datum": d.isoformat(), "name": b, "betrag": amount}}
 
 @app.get("/naechste-zahlungen")
 def get_all_future_payments():
-    heute = datetime.today().date()
-    future = []
-    gesamt_betrag = 0.0
-
+    today = datetime.today().date()
+    zahlen = []
+    total = 0.0
     for t in transaktionen_liste:
         if t["typ"] == "zahlung":
-            zahl_datum = datetime.strptime(t["datum"], "%Y-%m-%d").date()
-            if zahl_datum >= heute:
-                tage = (zahl_datum - heute).days
-                future.append({
-                    "name": t["bezeichnung"],
-                    "datum": zahl_datum.isoformat(),
-                    "in_tagen": tage,
-                    "betrag": t["betrag"]
-                })
-                gesamt_betrag += t["betrag"]
-
-    return {
-        "gesamt_betrag": gesamt_betrag,
-        "zahlungen": sorted(future, key=lambda z: z["in_tagen"])
-    }
+            d = datetime.strptime(t["datum"], "%Y-%m-%d").date()
+            if d >= today:
+                zahlen.append({"name": t["bezeichnung"], "datum": d.isoformat(),
+                               "in_tagen": (d - today).days, "betrag": t["betrag"]})
+                total += t["betrag"]
+    return {"gesamt_betrag": total, "zahlungen": sorted(zahlen, key=lambda x: x["in_tagen"])}
 
 @app.get("/monatsreport")
 def monatsreport(monat: str):
     try:
-        jahr, monat_zahl = map(int, monat.split("-"))
-    except ValueError:
-        return {"error": "Ungültiges Format (Erwartet YYYY-MM)"}
-
-    gefiltert = [
-        t for t in transaktionen_liste
-        if datetime.strptime(t["datum"], "%Y-%m-%d").year == jahr and
-           datetime.strptime(t["datum"], "%Y-%m-%d").month == monat_zahl
-    ]
-
-    result = {
-        "einnahmen": sum(t["betrag"] for t in gefiltert if t["typ"] == "einnahme"),
-        "ausgaben": sum(t["betrag"] for t in gefiltert if t["typ"] == "ausgabe"),
-        "zahlungen": sum(t["betrag"] for t in gefiltert if t["typ"] == "zahlung"),
-        "sparen": sum(t["betrag"] for t in gefiltert if t["typ"] == "sparen"),
-        "anzahl_transaktionen": len(gefiltert),
+        Y, M = map(int, monat.split("-"))
+    except:
+        return {"error": "Ungültiges Format (YYYY-MM)"}
+    gef = [t for t in transaktionen_liste if
+           datetime.strptime(t["datum"], "%Y-%m-%d").year == Y and
+           datetime.strptime(t["datum"], "%Y-%m-%d").month == M]
+    res = {
+        "einnahmen": sum(t["betrag"] for t in gef if t["typ"] == "einnahme"),
+        "ausgaben": sum(t["betrag"] for t in gef if t["typ"] == "ausgabe"),
+        "zahlungen": sum(t["betrag"] for t in gef if t["typ"] == "zahlung"),
+        "sparen": sum(t["betrag"] for t in gef if t["typ"] == "sparen"),
+        "anzahl_transaktionen": len(gef),
         "kategorien": {}
     }
-
-    for t in gefiltert:
-        kat = t.get("kategorie", "Sonstige") or "Sonstige"
-        result["kategorien"].setdefault(kat, 0)
-        result["kategorien"][kat] += t["betrag"]
-
-    return result
+    for t in gef:
+        k = t.get("kategorie") or "Sonstige"
+        res["kategorien"].setdefault(k, 0)
+        res["kategorien"][k] += t["betrag"]
+    return res
 
 @app.post("/reset")
 def reset_all():
