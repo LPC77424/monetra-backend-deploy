@@ -60,18 +60,69 @@ def get_transaktion_by_id(id: str):
     return {"error": "Nicht gefunden"}
 
 @app.put("/transaktion/{id}")
-def update_transaktion(id: str, eingabe: TransaktionEingabe):
-    for idx, t in enumerate(transaktionen_liste):
+def update_transaktion(id: str, eingabe: TransaktionEingabe, alle_zukuenftig: bool = False):
+    gefunden = None
+    for t in transaktionen_liste:
         if t["id"] == id:
-            transaktionen_liste[idx] = {**eingabe.dict(), "id": id}
-            return {"message": "Transaktion aktualisiert"}
-    return {"error": "Nicht gefunden"}
+            gefunden = t
+            break
+    if not gefunden:
+        return {"error": "Nicht gefunden"}
+
+    datum_alt = datetime.strptime(gefunden["datum"], "%Y-%m-%d").date()
+
+    if alle_zukuenftig and gefunden.get("wiederkehrend"):
+        transaktionen_liste[:] = [
+            t for t in transaktionen_liste
+            if not (
+                t.get("wiederkehrend") and
+                t["bezeichnung"] == gefunden["bezeichnung"] and
+                datetime.strptime(t["datum"], "%Y-%m-%d").date() >= datum_alt
+            )
+        ]
+        # Neue Serie einfügen
+        neue_transaktion = eingabe.dict()
+        neue_transaktion["id"] = str(uuid4())
+        transaktionen_liste.append(neue_transaktion)
+
+        if neue_transaktion.get("wiederkehrend"):
+            original_datum = datetime.strptime(neue_transaktion["datum"], "%Y-%m-%d").date()
+            for monat in range(1, 12):
+                jahr = original_datum.year + (original_datum.month + monat - 1) // 12
+                monat_neu = (original_datum.month + monat - 1) % 12 + 1
+                neues_datum = original_datum.replace(year=jahr, month=monat_neu)
+                kopie = neue_transaktion.copy()
+                kopie["id"] = str(uuid4())
+                kopie["datum"] = neues_datum.isoformat()
+                transaktionen_liste.append(kopie)
+        return {"message": "Serie aktualisiert"}
+    else:
+        for idx, t in enumerate(transaktionen_liste):
+            if t["id"] == id:
+                transaktionen_liste[idx] = {**eingabe.dict(), "id": id}
+                return {"message": "Transaktion aktualisiert"}
 
 @app.delete("/transaktion/{id}")
-def delete_transaktion(id: str):
-    global transaktionen_liste
-    transaktionen_liste = [t for t in transaktionen_liste if t["id"] != id]
-    return {"message": "Transaktion gelöscht"}
+def delete_transaktion(id: str, alle_zukuenftig: bool = False):
+    ziel = next((t for t in transaktionen_liste if t["id"] == id), None)
+    if not ziel:
+        return {"error": "Nicht gefunden"}
+
+    datum_ziel = datetime.strptime(ziel["datum"], "%Y-%m-%d").date()
+
+    if alle_zukuenftig and ziel.get("wiederkehrend"):
+        transaktionen_liste[:] = [
+            t for t in transaktionen_liste
+            if not (
+                t.get("wiederkehrend") and
+                t["bezeichnung"] == ziel["bezeichnung"] and
+                datetime.strptime(t["datum"], "%Y-%m-%d").date() >= datum_ziel
+            )
+        ]
+        return {"message": "Serie gelöscht"}
+    else:
+        transaktionen_liste[:] = [t for t in transaktionen_liste if t["id"] != id]
+        return {"message": "Transaktion gelöscht"}
 
 @app.get("/verfuegbar")
 def get_verfuegbar():
