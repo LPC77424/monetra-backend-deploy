@@ -22,6 +22,7 @@ class TransaktionEingabe(BaseModel):
     datum: str
     kategorie: Optional[str] = ""
     wiederkehrend: Optional[bool] = False
+    alle_zukuenftig: Optional[bool] = False  # NEU: als Feld im Body
 
 transaktionen_liste = []
 
@@ -60,18 +61,14 @@ def get_transaktion_by_id(id: str):
     return {"error": "Nicht gefunden"}
 
 @app.put("/transaktion/{id}")
-def update_transaktion(id: str, eingabe: TransaktionEingabe, alle_zukuenftig: bool = False):
-    gefunden = None
-    for t in transaktionen_liste:
-        if t["id"] == id:
-            gefunden = t
-            break
+def update_transaktion(id: str, eingabe: TransaktionEingabe):
+    gefunden = next((t for t in transaktionen_liste if t["id"] == id), None)
     if not gefunden:
         return {"error": "Nicht gefunden"}
 
     datum_alt = datetime.strptime(gefunden["datum"], "%Y-%m-%d").date()
 
-    if alle_zukuenftig and gefunden.get("wiederkehrend"):
+    if eingabe.alle_zukuenftig and gefunden.get("wiederkehrend"):
         transaktionen_liste[:] = [
             t for t in transaktionen_liste
             if not (
@@ -80,8 +77,8 @@ def update_transaktion(id: str, eingabe: TransaktionEingabe, alle_zukuenftig: bo
                 datetime.strptime(t["datum"], "%Y-%m-%d").date() >= datum_alt
             )
         ]
-        # Neue Serie einfügen
         neue_transaktion = eingabe.dict()
+        neue_transaktion.pop("alle_zukuenftig", None)
         neue_transaktion["id"] = str(uuid4())
         transaktionen_liste.append(neue_transaktion)
 
@@ -99,18 +96,20 @@ def update_transaktion(id: str, eingabe: TransaktionEingabe, alle_zukuenftig: bo
     else:
         for idx, t in enumerate(transaktionen_liste):
             if t["id"] == id:
-                transaktionen_liste[idx] = {**eingabe.dict(), "id": id}
+                neue_daten = eingabe.dict()
+                neue_daten.pop("alle_zukuenftig", None)
+                transaktionen_liste[idx] = {**neue_daten, "id": id}
                 return {"message": "Transaktion aktualisiert"}
 
 @app.delete("/transaktion/{id}")
-def delete_transaktion(id: str, alle_zukuenftig: bool = False):
+def delete_transaktion(id: str, eingabe: TransaktionEingabe):
     ziel = next((t for t in transaktionen_liste if t["id"] == id), None)
     if not ziel:
         return {"error": "Nicht gefunden"}
 
     datum_ziel = datetime.strptime(ziel["datum"], "%Y-%m-%d").date()
 
-    if alle_zukuenftig and ziel.get("wiederkehrend"):
+    if eingabe.alle_zukuenftig and ziel.get("wiederkehrend"):
         transaktionen_liste[:] = [
             t for t in transaktionen_liste
             if not (
