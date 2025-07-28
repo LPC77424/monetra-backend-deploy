@@ -9,7 +9,10 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "https://startling-souffle-cd2bcd.netlify.app",  # Netlify Domain
+        "http://localhost:3000",  # Optional: für lokale Tests
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
