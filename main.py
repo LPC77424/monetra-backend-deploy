@@ -23,7 +23,6 @@ class TransaktionEingabe(BaseModel):
     kategorie: Optional[str] = ""
     wiederkehrend: Optional[bool] = False
 
-kontostand_speicher = 0.0
 transaktionen_liste = []
 
 @app.get("/")
@@ -32,7 +31,6 @@ def read_root():
 
 @app.post("/transaktion")
 def add_transaktion(eingabe: TransaktionEingabe):
-    global kontostand_speicher
     transaktion = eingabe.dict()
     transaktion["id"] = str(uuid4())
     transaktionen_liste.append(transaktion)
@@ -47,11 +45,6 @@ def add_transaktion(eingabe: TransaktionEingabe):
             kopie["id"] = str(uuid4())
             kopie["datum"] = neues_datum.isoformat()
             transaktionen_liste.append(kopie)
-
-    if eingabe.typ == "einnahme":
-        kontostand_speicher += eingabe.betrag
-    else:
-        kontostand_speicher -= eingabe.betrag
 
     return {"message": "Transaktion gespeichert", "id": transaktion["id"]}
 
@@ -68,41 +61,30 @@ def get_transaktion_by_id(id: str):
 
 @app.put("/transaktion/{id}")
 def update_transaktion(id: str, eingabe: TransaktionEingabe):
-    global transaktionen_liste, kontostand_speicher
     for idx, t in enumerate(transaktionen_liste):
         if t["id"] == id:
-            # Alten Wert zurückrechnen
-            if t["typ"] == "einnahme":
-                kontostand_speicher -= t["betrag"]
-            else:
-                kontostand_speicher += t["betrag"]
-
-            # Neuen Wert hinzufügen
-            if eingabe.typ == "einnahme":
-                kontostand_speicher += eingabe.betrag
-            else:
-                kontostand_speicher -= eingabe.betrag
-
             transaktionen_liste[idx] = {**eingabe.dict(), "id": id}
             return {"message": "Transaktion aktualisiert"}
     return {"error": "Nicht gefunden"}
 
 @app.delete("/transaktion/{id}")
 def delete_transaktion(id: str):
-    global transaktionen_liste, kontostand_speicher
-    for t in transaktionen_liste:
-        if t["id"] == id:
-            if t["typ"] == "einnahme":
-                kontostand_speicher -= t["betrag"]
-            else:
-                kontostand_speicher += t["betrag"]
-            break
+    global transaktionen_liste
     transaktionen_liste = [t for t in transaktionen_liste if t["id"] != id]
     return {"message": "Transaktion gelöscht"}
 
 @app.get("/verfuegbar")
 def get_verfuegbar():
-    return {"verfuegbar": kontostand_speicher}
+    heute = datetime.today().date()
+    verfuegbar = 0.0
+    for t in transaktionen_liste:
+        datum = datetime.strptime(t["datum"], "%Y-%m-%d").date()
+        if datum <= heute:
+            if t["typ"] == "einnahme":
+                verfuegbar += t["betrag"]
+            else:
+                verfuegbar -= t["betrag"]
+    return {"verfuegbar": verfuegbar}
 
 @app.get("/naechste-zahlung")
 def get_next_payment():
@@ -187,7 +169,6 @@ def monatsreport(monat: str):
 
 @app.post("/reset")
 def reset_all():
-    global kontostand_speicher, transaktionen_liste
-    kontostand_speicher = 0.0
+    global transaktionen_liste
     transaktionen_liste = []
     return {"message": "Alle Daten wurden zurückgesetzt"}
