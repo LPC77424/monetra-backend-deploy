@@ -14,6 +14,7 @@ app.add_middleware(
         "https://startling-souffle-cd2bcd.netlify.app",
         "http://localhost:3000",
         "http://127.0.0.1:5500",
+        "https://radiant-alpaca-4e743e.netlify.app/",
     ],
     allow_credentials=True,
     allow_methods=["*"],
