@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-# --- Standard ---
+# === Standard ===
 import os
 import re
 import uuid
@@ -11,26 +11,30 @@ from datetime import datetime, date
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from typing import Optional, Dict, Any, List
 
-# --- Third-party ---
+
+# === Third-party ===
 import numpy as np
 import cv2
 import fitz  # PyMuPDF
 
-from fastapi import FastAPI, Query, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, Query, UploadFile, File, Form, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
-# =============================================================================
-# App & CORS
-# =============================================================================
+from models import Transaktion, Beleg, Base
+from database import engine, SessionLocal
 
+# === App Initialisierung ===
 app = FastAPI(title="Monetra Backend")
 
+Base.metadata.create_all(bind=engine)
+
 ALLOWED_ORIGINS = [
-    "https://startling-souffle-cd2bcd.netlify.app",  # Netlify
-    "http://127.0.0.1:5500",                          # VS Code Live Server
+    "https://startling-souffle-cd2bcd.netlify.app",
+    "http://127.0.0.1:5500",
     "http://localhost:5500",
 ]
 
@@ -42,22 +46,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# =============================================================================
-# Upload-Verzeichnis (einmalig mounten)
-# =============================================================================
-
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 app.mount("/uploads", StaticFiles(directory=str(UPLOAD_DIR)), name="uploads")
 
-# =============================================================================
-# Utils
-# =============================================================================
+# === Datenbank-Session ===
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
+# === Hilfsfunktionen ===
 def to_decimal2(value) -> Decimal:
-    """Normalisiert '140,45'/'140.45'/140 → Decimal(2) mit kaufm. Rundung."""
-    if value is None:
-        return Decimal("0.00")
     try:
         if isinstance(value, Decimal):
             d = value
@@ -71,7 +73,6 @@ def to_decimal2(value) -> Decimal:
         return Decimal("0.00")
 
 def add_months_safe(d: date, months: int) -> date:
-    """Fügt Monate sicher hinzu (28/29/30/31)."""
     y = d.year + (d.month - 1 + months) // 12
     m = (d.month - 1 + months) % 12 + 1
     mdays = [31, 29 if (y % 4 == 0 and (y % 100 != 0 or y % 400 == 0)) else 28,
@@ -82,17 +83,7 @@ def safe_filename(original: str) -> str:
     stem, ext = os.path.splitext(original or "")
     return f"{uuid.uuid4().hex}{(ext or '').lower() or '.bin'}"
 
-# =============================================================================
-# In-Memory Stores (Dev)
-# =============================================================================
-
-transaktionen_liste: List[Dict[str, Any]] = []
-belege_store: Dict[str, Dict[str, Any]] = {}  # beleg_id -> blob
-
-# =============================================================================
-# QR / PDF Utilities
-# =============================================================================
-
+# === QR Erkennung ===
 QR_IBAN_RE = re.compile(r"\bCH\d{2}[0-9A-Z]{17}\b")
 AMOUNT_RE = re.compile(r"\b\d+(?:[.,]\d{1,2})\b")
 CURRENCY_RE = re.compile(r"\b(CHF|EUR)\b", re.I)
@@ -119,8 +110,7 @@ def _pdf_first_page_to_png(pdf_path: str) -> Optional[str]:
         return None
 
 def extract_qr_text(file_path: str, content_type: str) -> Optional[str]:
-    ct = (content_type or "").lower()
-    if "pdf" in ct or file_path.lower().endswith(".pdf"):
+    if "pdf" in content_type.lower() or file_path.lower().endswith(".pdf"):
         tmp_img = _pdf_first_page_to_png(file_path)
         if not tmp_img:
             return None
@@ -134,8 +124,8 @@ def extract_qr_text(file_path: str, content_type: str) -> Optional[str]:
     return _read_qr_text_from_image(file_path)
 
 def parse_swiss_qr(qr_text: str) -> Dict[str, Any]:
-    info = {"iban": None, "empfaenger": None, "betrag": None,
-            "waehrung": None, "referenz": None, "zusatzinfo": None}
+    info = {"iban": None, "empfaenger": None, "betrag": None, "waehrung": None,
+            "referenz": None, "zusatzinfo": None}
     if not qr_text:
         return info
 
@@ -191,68 +181,7 @@ def build_transaction_suggestion(parsed: dict) -> dict:
         }
     }
 
-# =============================================================================
-# Models
-# =============================================================================
-
-class TransaktionEingabe(BaseModel):
-    typ: str
-    bezeichnung: str
-    betrag: Any     # wir normalisieren selbst via to_decimal2
-    datum: str
-    kategorie: Optional[str] = ""
-    wiederkehrend: Optional[bool] = False
-    beleg_id: Optional[str] = None
-
-# =============================================================================
-# Root
-# =============================================================================
-
-@app.get("/")
-def read_root():
-    return {"message": "Monetra Backend läuft!"}
-
-# =============================================================================
-# Belege (in-memory)
-# =============================================================================
-
-MAX_UPLOAD_SIZE = 5 * 1024 * 1024  # 5MB
-
-@app.post("/upload")
-async def upload_beleg(file: UploadFile = File(...)):
-    data = await file.read()
-    if len(data) > MAX_UPLOAD_SIZE:
-        raise HTTPException(status_code=413, detail="Datei zu groß (max. 5MB)")
-    beleg_id = str(uuid.uuid4())
-    belege_store[beleg_id] = {
-        "filename": file.filename,
-        "content_type": file.content_type or "application/octet-stream",
-        "data": data,
-        "size": len(data),
-    }
-    return {"beleg_id": beleg_id, "filename": file.filename, "size": len(data)}
-
-@app.get("/beleg/{beleg_id}")
-def get_beleg(beleg_id: str):
-    doc = belege_store.get(beleg_id)
-    if not doc:
-        raise HTTPException(status_code=404, detail="Beleg nicht gefunden")
-    return StreamingResponse(
-        BytesIO(doc["data"]),
-        media_type=doc["content_type"],
-        headers={"Content-Disposition": f'inline; filename="{doc["filename"]}"'}
-    )
-
-@app.delete("/beleg/{beleg_id}")
-def delete_beleg(beleg_id: str):
-    if beleg_id not in belege_store:
-        raise HTTPException(status_code=404, detail="Beleg nicht gefunden")
-    for t in transaktionen_liste:
-        if t.get("beleg_id") == beleg_id:
-            t["beleg_id"] = None
-    del belege_store[beleg_id]
-    return {"message": "Beleg gelöscht"}
-
+# === Upload Rechnung ===
 @app.post("/upload-rechnung")
 async def upload_rechnung(
     file: UploadFile = File(...),
@@ -285,188 +214,246 @@ async def upload_rechnung(
         "beschreibung": beschreibung or "",
         "vorschlag": suggestion,
     }
+...
+# (Fortsetzung von oben)
+
+from pydantic import BaseModel
+from typing import Optional, Any
+
+class TransaktionEingabe(BaseModel):
+    typ: str
+    bezeichnung: str
+    betrag: Any  # wir normalisieren selbst via to_decimal2
+    datum: str
+    kategorie: Optional[str] = ""
+    wiederkehrend: Optional[bool] = False
+    beleg_id: Optional[str] = None
+
 
 # =============================================================================
-# Transaktionen
+# Transaktionen (POST)
 # =============================================================================
 
 @app.post("/transaktion")
-def add_transaktion(eingabe: TransaktionEingabe):
-    tx = eingabe.dict()
-    tx["betrag"] = to_decimal2(tx.get("betrag"))
-    tx["id"] = str(uuid.uuid4())
-    transaktionen_liste.append(tx)
+def add_transaktion(
+    eingabe: TransaktionEingabe,
+    db: Session = Depends(get_db)
+):
+    neu = eingabe.dict()
+    neu["id"] = str(uuid.uuid4())
+    neu["betrag"] = float(to_decimal2(neu.get("betrag")))
+    neu["datum"] = datetime.strptime(neu["datum"], "%Y-%m-%d").date()
 
-    if tx.get("wiederkehrend"):
-        start = datetime.strptime(tx["datum"], "%Y-%m-%d").date()
+    neue_transaktion = Transaktion(**neu)
+    db.add(neue_transaktion)
+
+    if neu.get("wiederkehrend"):
+        start = neu["datum"]
         for i in range(1, 12):
             nd = add_months_safe(start, i)
-            kopie = tx.copy()
+            kopie = neu.copy()
             kopie["id"] = str(uuid.uuid4())
-            kopie["datum"] = nd.isoformat()
-            transaktionen_liste.append(kopie)
+            kopie["datum"] = nd
+            neue_kopie = Transaktion(**kopie)
+            db.add(neue_kopie)
 
-    return {"message": "Transaktion gespeichert", "id": tx["id"]}
+    db.commit()
+    return {"message": "Transaktion gespeichert", "id": neu["id"]}
+
+# =============================================================================
+# Transaktionen abrufen (GET)
+# =============================================================================
 
 @app.get("/transaktionen")
-def get_transaktionen(monat: Optional[str] = None, nur_serie: bool = False):
-    result = transaktionen_liste
+def get_transaktionen(
+    monat: Optional[str] = None,
+    nur_serie: bool = False,
+    db: Session = Depends(get_db)
+):
+    query = db.query(Transaktion)
     if monat:
         try:
             y, m = map(int, monat.split("-"))
         except Exception:
             raise HTTPException(status_code=422, detail="Ungültiger Monat (YYYY-MM)")
-        result = [
-            t for t in result
-            if datetime.strptime(t["datum"], "%Y-%m-%d").year == y and
-               datetime.strptime(t["datum"], "%Y-%m-%d").month == m
-        ]
+        query = query.filter(
+            Transaktion.datum >= date(y, m, 1),
+            Transaktion.datum < add_months_safe(date(y, m, 1), 1)
+        )
     if nur_serie:
-        result = [t for t in result if t.get("wiederkehrend")]
+        query = query.filter(Transaktion.wiederkehrend == True)
 
-    # Beträge als float zurückgeben
-    return {"transaktionen": [
-        {**t, "betrag": float(t["betrag"]) if isinstance(t.get("betrag"), Decimal) else t.get("betrag")}
-        for t in result
-    ]}
+    result = query.all()
+    return [{**t.__dict__, "betrag": float(t.betrag)} for t in result]
+
+# =============================================================================
+# Einzelne Transaktion abrufen
+# =============================================================================
 
 @app.get("/transaktion/{id}")
-def get_transaktion_by_id(id: str):
-    for t in transaktionen_liste:
-        if t["id"] == id:
-            out = {**t}
-            if isinstance(out.get("betrag"), Decimal):
-                out["betrag"] = float(out["betrag"])
-            return out
-    raise HTTPException(status_code=404, detail="Nicht gefunden")
+def get_transaktion_by_id(id: str, db: Session = Depends(get_db)):
+    tx = db.get(Transaktion, id)
+    if not tx:
+        raise HTTPException(status_code=404, detail="Nicht gefunden")
+    return {**tx.__dict__, "betrag": float(tx.betrag)}
+
+# =============================================================================
+# Transaktion ändern
+# =============================================================================
 
 @app.put("/transaktion/{id}")
-def update_transaktion(id: str, eingabe: TransaktionEingabe, alle_zukuenftig: bool = Query(False)):
-    gefunden = next((t for t in transaktionen_liste if t["id"] == id), None)
-    if not gefunden:
+def update_transaktion(
+    id: str,
+    eingabe: TransaktionEingabe,
+    alle_zukuenftig: bool = Query(False),
+    db: Session = Depends(get_db)
+):
+    tx = db.get(Transaktion, id)
+    if not tx:
         raise HTTPException(status_code=404, detail="Nicht gefunden")
 
-    datum_alt = datetime.strptime(gefunden["datum"], "%Y-%m-%d").date()
+    if alle_zukuenftig and tx.wiederkehrend:
+        db.query(Transaktion).filter(
+            Transaktion.wiederkehrend == True,
+            Transaktion.bezeichnung == tx.bezeichnung,
+            Transaktion.datum >= tx.datum
+        ).delete()
+        db.commit()
 
-    if alle_zukuenftig and gefunden.get("wiederkehrend"):
-        # Serie ab diesem Datum löschen
-        transaktionen_liste[:] = [
-            t for t in transaktionen_liste
-            if not (
-                t.get("wiederkehrend")
-                and t["bezeichnung"] == gefunden["bezeichnung"]
-                and datetime.strptime(t["datum"], "%Y-%m-%d").date() >= datum_alt
-            )
-        ]
-        # Neue Serie
         neu = eingabe.dict()
-        neu["betrag"] = to_decimal2(neu.get("betrag"))
         neu["id"] = str(uuid.uuid4())
-        transaktionen_liste.append(neu)
+        neu["betrag"] = float(to_decimal2(neu.get("betrag")))
+        neu["datum"] = datetime.strptime(neu["datum"], "%Y-%m-%d").date()
+        neue_tx = Transaktion(**neu)
+        db.add(neue_tx)
 
         if neu.get("wiederkehrend"):
-            start = datetime.strptime(neu["datum"], "%Y-%m-%d").date()
+            start = neu["datum"]
             for i in range(1, 12):
                 nd = add_months_safe(start, i)
                 kopie = neu.copy()
                 kopie["id"] = str(uuid.uuid4())
-                kopie["datum"] = nd.isoformat()
-                transaktionen_liste.append(kopie)
+                kopie["datum"] = nd
+                db.add(Transaktion(**kopie))
+
+        db.commit()
         return {"message": "Serie aktualisiert"}
 
-    # Nur diese Transaktion
-    for idx, t in enumerate(transaktionen_liste):
-        if t["id"] == id:
-            neu = eingabe.dict()
-            neu["betrag"] = to_decimal2(neu.get("betrag"))
-            transaktionen_liste[idx] = {**neu, "id": id}
-            return {"message": "Transaktion aktualisiert"}
+    # Nur einzelne Transaktion
+    for key, val in eingabe.dict().items():
+        if key == "betrag":
+            val = float(to_decimal2(val))
+        setattr(tx, key, val)
+
+    db.commit()
+    return {"message": "Transaktion aktualisiert"}
+
+# =============================================================================
+# Transaktion löschen
+# =============================================================================
 
 @app.delete("/transaktion/{id}")
-def delete_transaktion(id: str, alle_zukuenftig: bool = Query(False)):
-    ziel = next((t for t in transaktionen_liste if t["id"] == id), None)
-    if not ziel:
+def delete_transaktion(
+    id: str,
+    alle_zukuenftig: bool = Query(False),
+    db: Session = Depends(get_db)
+):
+    tx = db.get(Transaktion, id)
+    if not tx:
         raise HTTPException(status_code=404, detail="Nicht gefunden")
 
-    datum_ziel = datetime.strptime(ziel["datum"], "%Y-%m-%d").date()
-
-    if alle_zukuenftig and ziel.get("wiederkehrend"):
-        transaktionen_liste[:] = [
-            t for t in transaktionen_liste
-            if not (
-                t.get("wiederkehrend")
-                and t["bezeichnung"] == ziel["bezeichnung"]
-                and datetime.strptime(t["datum"], "%Y-%m-%d").date() >= datum_ziel
-            )
-        ]
+    if alle_zukuenftig and tx.wiederkehrend:
+        db.query(Transaktion).filter(
+            Transaktion.wiederkehrend == True,
+            Transaktion.bezeichnung == tx.bezeichnung,
+            Transaktion.datum >= tx.datum
+        ).delete()
+        db.commit()
         return {"message": "Serie gelöscht"}
 
-    transaktionen_liste[:] = [t for t in transaktionen_liste if t["id"] != id]
+    db.delete(tx)
+    db.commit()
     return {"message": "Transaktion gelöscht"}
 
 # =============================================================================
-# Dashboard
+# Dashboard: Verfügbar
 # =============================================================================
 
 @app.get("/verfuegbar")
-def get_verfuegbar():
+def get_verfuegbar(db: Session = Depends(get_db)):
     heute = datetime.today().date()
     verf = Decimal("0.00")
-    for t in transaktionen_liste:
-        datum = datetime.strptime(t["datum"], "%Y-%m-%d").date()
-        betrag = to_decimal2(t.get("betrag"))
-        if datum <= heute:
-            if t["typ"] == "einnahme":
+    alle = db.query(Transaktion).all()
+    for t in alle:
+        if t.datum <= heute:
+            betrag = to_decimal2(t.betrag)
+            if t.typ == "einnahme":
                 verf += betrag
             else:
                 verf -= betrag
     return {"verfuegbar": float(verf)}
 
+# =============================================================================
+# Dashboard: Nächste Zahlungen
+# =============================================================================
+
 @app.get("/naechste-zahlungen")
-def get_all_future_payments():
+def get_all_future_payments(db: Session = Depends(get_db)):
     heute = datetime.today().date()
     future = []
     summe = Decimal("0.00")
-    for t in transaktionen_liste:
-        if t["typ"] == "zahlung":
-            zahl_datum = datetime.strptime(t["datum"], "%Y-%m-%d").date()
-            if zahl_datum >= heute:
-                betrag = to_decimal2(t.get("betrag"))
-                future.append({
-                    "name": t["bezeichnung"],
-                    "datum": zahl_datum.isoformat(),
-                    "in_tagen": (zahl_datum - heute).days,
-                    "betrag": float(betrag),
-                })
-                summe += betrag
+    for t in db.query(Transaktion).filter(Transaktion.typ == "zahlung").all():
+        if t.datum >= heute:
+            betrag = to_decimal2(t.betrag)
+            future.append({
+                "name": t.bezeichnung,
+                "datum": t.datum.isoformat(),
+                "in_tagen": (t.datum - heute).days,
+                "betrag": float(betrag),
+            })
+            summe += betrag
     return {"gesamt_betrag": float(summe), "zahlungen": sorted(future, key=lambda z: z["in_tagen"])}
 
+# =============================================================================
+# Monatsreport
+# =============================================================================
+
 @app.get("/monatsreport")
-def monatsreport(monat: str):
+def monatsreport(monat: str, db: Session = Depends(get_db)):
     try:
         jahr, monat_zahl = map(int, monat.split("-"))
     except ValueError:
         raise HTTPException(status_code=422, detail="Ungültiges Format (YYYY-MM)")
 
-    gefiltert = [
-        {**t, "betrag": to_decimal2(t.get("betrag"))}
-        for t in transaktionen_liste
-        if datetime.strptime(t["datum"], "%Y-%m-%d").year == jahr and
-           datetime.strptime(t["datum"], "%Y-%m-%d").month == monat_zahl
-    ]
+    start = date(jahr, monat_zahl, 1)
+    end = add_months_safe(start, 1)
+
+    gefiltert = db.query(Transaktion).filter(
+        Transaktion.datum >= start,
+        Transaktion.datum < end
+    ).all()
 
     result = {
-        "einnahmen": float(sum(t["betrag"] for t in gefiltert if t["typ"] == "einnahme")),
-        "ausgaben":  float(sum(t["betrag"] for t in gefiltert if t["typ"] == "ausgabe")),
-        "zahlungen": float(sum(t["betrag"] for t in gefiltert if t["typ"] == "zahlung")),
-        "sparen":    float(sum(t["betrag"] for t in gefiltert if t["typ"] == "sparen")),
+        "einnahmen": 0.0,
+        "ausgaben": 0.0,
+        "zahlungen": 0.0,
+        "sparen": 0.0,
         "anzahl_transaktionen": len(gefiltert),
         "kategorien": {},
     }
     for t in gefiltert:
-        kat = t.get("kategorie", "Sonstige") or "Sonstige"
+        betrag = to_decimal2(t.betrag)
+        if t.typ == "einnahme":
+            result["einnahmen"] += float(betrag)
+        elif t.typ == "ausgabe":
+            result["ausgaben"] += float(betrag)
+        elif t.typ == "zahlung":
+            result["zahlungen"] += float(betrag)
+        elif t.typ == "sparen":
+            result["sparen"] += float(betrag)
+        kat = t.kategorie or "Sonstige"
         result["kategorien"].setdefault(kat, 0.0)
-        result["kategorien"][kat] += float(t["betrag"])
+        result["kategorien"][kat] += float(betrag)
     return result
 
 # =============================================================================
@@ -474,7 +461,12 @@ def monatsreport(monat: str):
 # =============================================================================
 
 @app.post("/reset")
-def reset_all():
-    transaktionen_liste.clear()
-    belege_store.clear()
+def reset_all(db: Session = Depends(get_db)):
+    db.query(Transaktion).delete()
+    db.query(Beleg).delete()
+    db.commit()
     return {"message": "Alle Daten wurden zurückgesetzt"}
+
+@app.get("/")
+def read_root():
+    return {"message": "Monetra Backend läuft!"}
