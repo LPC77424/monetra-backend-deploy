@@ -8,6 +8,7 @@ import shutil
 from io import BytesIO
 from pathlib import Path
 from datetime import datetime, date
+from fastapi import HTTPException
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from typing import Optional, Dict, Any, List
 
@@ -314,6 +315,9 @@ def get_transaktion_by_id(id: str, db: Session = Depends(get_db)):
 # Transaktion ändern
 # =============================================================================
 
+from datetime import datetime
+from fastapi import HTTPException
+
 @app.put("/transaktion/{id}")
 def update_transaktion(
     id: str,
@@ -325,7 +329,13 @@ def update_transaktion(
     if not tx:
         raise HTTPException(status_code=404, detail="Nicht gefunden")
 
+    try:
+        eingabe_datum = datetime.strptime(eingabe.datum, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Ungültiges Datum (YYYY-MM-DD erwartet)")
+
     if alle_zukuenftig and tx.wiederkehrend:
+        # bestehende Serie ab hier löschen
         db.query(Transaktion).filter(
             Transaktion.wiederkehrend == True,
             Transaktion.bezeichnung == tx.bezeichnung,
@@ -336,7 +346,7 @@ def update_transaktion(
         neu = eingabe.dict()
         neu["id"] = str(uuid.uuid4())
         neu["betrag"] = float(to_decimal2(neu.get("betrag")))
-        neu["datum"] = datetime.strptime(neu["datum"], "%Y-%m-%d").date()
+        neu["datum"] = eingabe_datum
         neue_tx = Transaktion(**neu)
         db.add(neue_tx)
 
@@ -352,11 +362,13 @@ def update_transaktion(
         db.commit()
         return {"message": "Serie aktualisiert"}
 
-    # Nur einzelne Transaktion
-    for key, val in eingabe.dict().items():
-        if key == "betrag":
-            val = float(to_decimal2(val))
-        setattr(tx, key, val)
+    # Einzel-Update
+    tx.typ = eingabe.typ
+    tx.bezeichnung = eingabe.bezeichnung
+    tx.betrag = float(to_decimal2(eingabe.betrag))
+    tx.datum = eingabe_datum
+    tx.kategorie = eingabe.kategorie or ""
+    tx.wiederkehrend = eingabe.wiederkehrend or False
 
     db.commit()
     return {"message": "Transaktion aktualisiert"}
