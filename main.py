@@ -11,13 +11,12 @@ from datetime import datetime, date
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from typing import Optional, Dict, Any, List
 
-
 # === Third-party ===
 import numpy as np
 import cv2
 import fitz  # PyMuPDF
 
-from fastapi import FastAPI, Query, UploadFile, File, Form, HTTPException, Depends
+from fastapi import FastAPI, Query, UploadFile, File, Form, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
@@ -30,12 +29,11 @@ from database import engine, SessionLocal
 # === App Initialisierung ===
 app = FastAPI(title="Monetra Backend")
 
-Base.metadata.create_all(bind=engine)
-
+# ✅ CORS-Middleware muss direkt hierhin!
 ALLOWED_ORIGINS = [
-    "https://startling-souffle-cd2bcd.netlify.app",
     "http://127.0.0.1:5500",
     "http://localhost:5500",
+    "https://startling-souffle-cd2bcd.netlify.app",
 ]
 
 app.add_middleware(
@@ -45,6 +43,21 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ✅ Fehler-Logging-Middleware (nach CORS!)
+import traceback
+
+@app.middleware("http")
+async def catch_exceptions_middleware(request: Request, call_next):
+    try:
+        return await call_next(request)
+    except Exception:
+        traceback.print_exc()
+        raise
+
+# Rest deines Codes bleibt unverändert…
+
+Base.metadata.create_all(bind=engine)
 
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
