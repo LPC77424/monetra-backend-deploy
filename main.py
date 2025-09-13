@@ -31,6 +31,7 @@ from database import engine, SessionLocal
 app = FastAPI(title="Monetra Backend")
 
 # ✅ CORS-Middleware muss direkt hierhin!
+
 ALLOWED_ORIGINS = [
     "http://127.0.0.1:5500",
     "http://localhost:5500",

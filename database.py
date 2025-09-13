@@ -1,22 +1,20 @@
 from sqlalchemy import create_engine
+from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+import os
+from dotenv import load_dotenv
 
-DATABASE_URL = "sqlite:///monetra.db"
+# .env laden
+load_dotenv()
 
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={"check_same_thread": False}  # nur für SQLite nötig
-)
+# Verbindung zur PostgreSQL-Datenbank aus der .env-Datei
+DATABASE_URL = os.getenv("DATABASE_URL")
 
+# Engine erstellen
+engine = create_engine(DATABASE_URL)
+
+# Session
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-from sqlalchemy.orm import Session
-from fastapi import Depends
-
-# Diese Funktion liefert eine DB-Session für FastAPI
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+# Basis-Klasse für Modelle
+Base = declarative_base()
