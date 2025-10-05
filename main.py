@@ -8,9 +8,13 @@ import shutil
 from io import BytesIO
 from pathlib import Path
 from datetime import datetime, date
-from fastapi import HTTPException
+from fastapi import UploadFile, File, Form, HTTPException
 from decimal import Decimal, ROUND_HALF_UP, InvalidOperation
 from typing import Optional, Dict, Any, List
+from database import SessionLocal
+from models import Transaktion
+from sqlalchemy.dialects.postgresql import UUID
+from uuid import UUID, uuid4
 
 # === Third-party ===
 import numpy as np
@@ -135,7 +139,7 @@ def extract_qr_text(file_path: str, content_type: str) -> Optional[str]:
             try:
                 os.remove(tmp_img)
             except Exception:
-                pass
+               pass
     return _read_qr_text_from_image(file_path)
 
 def parse_swiss_qr(qr_text: str) -> Dict[str, Any]:
@@ -196,25 +200,61 @@ def build_transaction_suggestion(parsed: dict) -> dict:
         }
     }
 
-# === Upload Rechnung ===
 @app.post("/upload-rechnung")
 async def upload_rechnung(
     file: UploadFile = File(...),
-    transaktion_id: str = Form(""),
-    beschreibung: str = Form(""),
+    transaktion_id: Optional[str] = Form(""),
+    beschreibung: str = Form("")
 ):
+    if transaktion_id:
+        try:
+            transaktion_id = UUID(transaktion_id)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Ungültige UUID für transaktion_id")
+
     raw_name = file.filename or "upload"
     suffix = os.path.splitext(raw_name)[1].lower()
     if suffix not in (".jpg", ".jpeg", ".png", ".pdf"):
         suffix = ".jpg"
+
     safe_name = f"{uuid.uuid4().hex}{suffix}"
+    beleg_id = uuid.uuid4()
     stored_path = UPLOAD_DIR / safe_name
+
+    file.file.seek(0)
+    file_bytes = file.file.read()
+    file.file.seek(0)
+
     with stored_path.open("wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
-    qr_text = extract_qr_text(str(stored_path), file.content_type or "")
-    parsed = parse_swiss_qr(qr_text) if qr_text else {}
-    suggestion = build_transaction_suggestion(parsed) if qr_text else None
+    db = SessionLocal()
+
+    try:
+        neuer_beleg = Beleg(
+            beleg_id=beleg_id,
+            filename=raw_name,
+            content_type=file.content_type,
+            size=stored_path.stat().st_size,
+            data=file_bytes
+        )
+        db.add(neuer_beleg)
+        db.commit()
+
+        qr_text = extract_qr_text(str(stored_path), file.content_type or "")
+        parsed = parse_swiss_qr(qr_text) if qr_text else {}
+        suggestion = build_transaction_suggestion(parsed) if qr_text else None
+
+        if suggestion:
+            suggestion["beleg_id"] = beleg_id
+            allowed_keys = {c.name for c in Transaktion.__table__.columns}
+            filtered = {k: v for k, v in suggestion.items() if k in allowed_keys}
+            neue_transaktion = Transaktion(**filtered)
+            db.add(neue_transaktion)
+            db.commit()
+
+    finally:
+        db.close()
 
     return {
         "ok": True,
@@ -227,9 +267,10 @@ async def upload_rechnung(
         "qr_info": parsed,
         "transaktion_id": transaktion_id or None,
         "beschreibung": beschreibung or "",
+        "beleg_id": beleg_id,
         "vorschlag": suggestion,
     }
-...
+
 # (Fortsetzung von oben)
 
 from pydantic import BaseModel
@@ -255,9 +296,12 @@ def add_transaktion(
     db: Session = Depends(get_db)
 ):
     neu = eingabe.dict()
-    neu["id"] = str(uuid.uuid4())
+    neu["id"] = uuid.uuid4()
     neu["betrag"] = float(to_decimal2(neu.get("betrag")))
     neu["datum"] = datetime.strptime(neu["datum"], "%Y-%m-%d").date()
+
+    if not neu.get("beleg_id"):
+        neu["beleg_id"] = None
 
     neue_transaktion = Transaktion(**neu)
     db.add(neue_transaktion)
@@ -267,13 +311,15 @@ def add_transaktion(
         for i in range(1, 12):
             nd = add_months_safe(start, i)
             kopie = neu.copy()
-            kopie["id"] = str(uuid.uuid4())
+            kopie["id"] = uuid.uuid4()
             kopie["datum"] = nd
             neue_kopie = Transaktion(**kopie)
             db.add(neue_kopie)
 
     db.commit()
-    return {"message": "Transaktion gespeichert", "id": neu["id"]}
+    return {"message": "Transaktion gespeichert", 
+            "id": neue_transaktion.id,
+            "beleg_id": neue_transaktion.beleg_id}
 
 # =============================================================================
 # Transaktionen abrufen (GET)
@@ -345,7 +391,7 @@ def update_transaktion(
         db.commit()
 
         neu = eingabe.dict()
-        neu["id"] = str(uuid.uuid4())
+        neu["id"] = uuid.uuid4()
         neu["betrag"] = float(to_decimal2(neu.get("betrag")))
         neu["datum"] = eingabe_datum
         neue_tx = Transaktion(**neu)
@@ -356,7 +402,7 @@ def update_transaktion(
             for i in range(1, 12):
                 nd = add_months_safe(start, i)
                 kopie = neu.copy()
-                kopie["id"] = str(uuid.uuid4())
+                kopie["id"] = uuid.uuid4()
                 kopie["datum"] = nd
                 db.add(Transaktion(**kopie))
 

@@ -1,4 +1,5 @@
-from database import Base, engine
+from database import Base
+from database import engine
 import models  # importiere deine Models, z. B. Transaktion
 
 print("📦 Starte Tabellen-Erstellung...")
